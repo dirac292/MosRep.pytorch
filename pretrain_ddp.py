@@ -20,7 +20,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from loguru import logger
 from torch.cuda.amp import GradScaler, autocast
-
+import wandb
 import moco.resnet as models
 import utils.misc as misc
 from moco.builder import MoCo, MosRep
@@ -34,7 +34,7 @@ model_names = sorted(name for name in models.__dict__
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--train-data', metavar='DIR',
-                    help='path to dataset')
+                    help='path to dataset',default="/mnt/pub1/ssl-pretraining/data/hyper-k-mosrep2/train/shards-{00000..00099}.tar")
 parser.add_argument('--train-num-samples', default=1281167, type=int,
                     help='number of training samples (default: 1281167)')
 parser.add_argument("--train-data-upsampling-factors",
@@ -134,7 +134,11 @@ parser.add_argument('--shift-pix', default=48, type=int,
                     help='the range of shfiting pixels')
 parser.add_argument('--shift-beta', default=0.5, type=float,
                     help='the shifting beta distribution')
-
+# parser.add_argument('--offline_wandb', action='store_true', help='Run wandb offline')                    
+# parser.add_argument("--wandb_project", type=str, default='ssl-pretraining', help='Wandb project name')
+# parser.add_argument("--wandb_team", type=str, default='critical-ml-dg', help='Wandb team name')
+# parser.add_argument("--tags", nargs='+', default=[], help='Tags to include for logging')
+# parser.add_argument("--run_id", required=True, type=str, help='Unique identifier for a run')
 
 @logger.catch
 def main():
@@ -158,6 +162,23 @@ def main():
         np.random.seed(args.seed + args.rank)
         random.seed(args.seed + args.rank)
         torch.manual_seed(args.seed + args.rank)
+
+    # if args.rank == 0:
+    #     tags = ["pretrain"] + args.tags
+    #     wandb.init(
+    #         name=args.run_id,
+    #         project=args.wandb_project,
+    #         entity=args.wandb_team,
+    #         dir=args.exp_folder,
+    #         tags=tags,
+    #         mode="offline" if args.offline_wandb else "online",
+    #     )
+    #     # Add hyperparameters to config
+    #     wandb.config.update({"hyper-parameters": vars(args)})
+    #     wandb.config.update({"config_file": cfg})
+    #     wandb.config.update(
+    #         {"nvidia-smi": subprocess.check_output(["nvidia-smi"]).decode()}
+    #     )
 
     # output folder
     date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
