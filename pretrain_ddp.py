@@ -34,8 +34,8 @@ model_names = sorted(name for name in models.__dict__
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--train-data', metavar='DIR',
-                    help='path to dataset',default="/mnt/pub1/ssl-pretraining/data/hyper-k-mosrep2/train/shards-{00000..00099}.tar")
-parser.add_argument('--train-num-samples', default=1281167, type=int,
+                    help='path to dataset',default="/mnt/pub1/ssl-pretraining/data/hyper-k-mosrep_final/train/shards-{00000..00099}.tar")
+parser.add_argument('--train-num-samples', default=99417, type=int,
                     help='number of training samples (default: 1281167)')
 parser.add_argument("--train-data-upsampling-factors",
                     type=str,
@@ -80,9 +80,9 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
-parser.add_argument('-p', '--print-freq', default=100, type=int,
+parser.add_argument('-p', '--print-freq', default=1, type=int,
                     metavar='N', help='print frequency (default: 100)')
-parser.add_argument('-s', '--save-freq', default=50, type=int,
+parser.add_argument('-s', '--save-freq', default=1, type=int,
                     metavar='N', help='save frequency (default: 50)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
@@ -319,6 +319,8 @@ def train(train_loader, model, optimizer, scaler, epoch, args):
         #   key: B, 3, H, W
         batch = [item.cuda(args.local_rank, non_blocking=True) for item in batch]
         B = batch[0].size(0)
+        batch_size = batch[0].size(0) if isinstance(batch, list) and len(batch) > 0 else None
+        # print(f"Debug: Batch {i} size: {batch_size}")
         # measure data loading time
         data_time.update(time.time() - end)
 

@@ -127,8 +127,11 @@ class CropsTransform:
         #     label = None  # or some default value if needed
         # print(sample.keys())
         # _, _, x, _,_ = sample.values()
-        x = sample['image']
+
+        # x = sample['image']
         # standard view: query & key
+        # print(sample.keys())
+        _, _, x, label = sample.values()
         crops_q = self.transform_standard(x)
         crops_k = self.transform_standard(x)
 
@@ -247,6 +250,7 @@ def log_and_continue(exn):
     logger.info(f'Handling webdataset error ({repr(exn)}). Ignoring.')
     return True
 
+
 def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
     """Return function over iterator that groups key, value pairs into samples.
 
@@ -256,65 +260,25 @@ def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, h
     current_sample = None
     for filesample in data:
         assert isinstance(filesample, dict)
-        
-        # Check if 'fname' and 'data' keys exist to avoid KeyError
         if "fname" not in filesample or "data" not in filesample:
-            # print("Warning: Missing 'fname' or 'data' in filesample, skipping this entry.")
             continue
-        
         fname, value = filesample["fname"], filesample["data"]
         prefix, suffix = keys(fname)
         if prefix is None:
             continue
         if lcase:
             suffix = suffix.lower()
-        
+        # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
+        #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
+        #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
         if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
             if valid_sample(current_sample):
                 yield current_sample
-            current_sample = dict(__key__=prefix)
-            # Add __url__ if available
-            if "__url__" in filesample:
-                current_sample["__url__"] = filesample["__url__"]
-        
+            current_sample = dict(__key__=prefix, __url__=filesample["__url__"])
         if suffixes is None or suffix in suffixes:
             current_sample[suffix] = value
-
     if valid_sample(current_sample):
         yield current_sample
-
-
-# def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
-#     """Return function over iterator that groups key, value pairs into samples.
-
-#     :param keys: function that splits the key into key and extension (base_plus_ext)
-#     :param lcase: convert suffixes to lower case (Default value = True)
-#     """
-#     current_sample = None
-#     for filesample in data:
-#         assert isinstance(filesample, dict)
-#         # print(filesample.keys())
-#         if "fname" not in filesample or "data" not in filesample:
-#             print("Warning: Missing 'fname' or 'data' in filesample, skipping this entry.")
-#             continue
-#         fname, value = filesample["fname"], filesample["data"]
-#         prefix, suffix = keys(fname)
-#         if prefix is None:
-#             continue
-#         if lcase:
-#             suffix = suffix.lower()
-#         # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
-#         #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
-#         #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
-#         if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
-#             if valid_sample(current_sample):
-#                 yield current_sample
-#             current_sample = dict(__key__=prefix, __url__=filesample["__url__"])
-#         if suffixes is None or suffix in suffixes:
-#             current_sample[suffix] = value
-#     if valid_sample(current_sample):
-#         yield current_sample
-
 
 def tarfile_to_samples_nothrow(src, handler=log_and_continue):
     # NOTE this is a re-impl of the webdataset impl with group_by_keys that doesn't throw
@@ -446,9 +410,9 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
                     'Currently, number of dataset samples must be specified for training dataset. '
                     'Please specify via `--train-num-samples` if no dataset length info present.')
         else:
-            num_samples = args.val_num_samples or 0
+            num_samples = args.val_num_samples or 0  # eval will just exhaust the iterator if not specified
 
-    shared_epoch = SharedEpoch(epoch=epoch)
+    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
     
     if resampled:
         pipeline = [ResampledShards2(input_shards, weights=args.train_data_upsampling_factors, deterministic=True, epoch=shared_epoch)]
@@ -456,6 +420,7 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
         assert args.train_data_upsampling_factors is None, "--train_data_upsampling_factors is only supported when sampling with replacement (together with --dataset-resampled)."
         pipeline = [wds.SimpleShardList(input_shards)]
 
+    # at this point we have an iterator over all the shards
     if mode in ['pretrain', 'train']:
         if not resampled:
             pipeline.extend([
@@ -469,7 +434,8 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
                 wds.split_by_worker,
             ])
         pipeline.extend([
-            tarfile_to_samples_nothrow,
+            # at this point, we have an iterator over the shards assigned to each worker at each node
+            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
             wds.shuffle(
                 bufsize=_SAMPLE_SHUFFLE_SIZE,
                 initial=_SAMPLE_SHUFFLE_INITIAL,
@@ -478,15 +444,15 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
     else:
         pipeline.extend([
             wds.split_by_worker,
+            # at this point, we have an iterator over the shards assigned to each worker
             wds.tarfile_to_samples(handler=log_and_continue),
         ])
-
-    # Apply rename without 'cls' during pretrain and train for unlabeled data
     pipeline.extend([
         wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(image="jpg"),  # Only rename 'jpg' to 'image'
+        # wds.rename(fname="__key__", image="jpg"), 
+        wds.rename(image="jpg", label="cls"),
         wds.map(preprocess_img),
-        wds.batched(args.batch_size, partial=True)
+        wds.batched(args.batch_size, partial=False)
     ])
 
     dataset = wds.DataPipeline(*pipeline)
@@ -494,15 +460,17 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
     if mode in ['pretrain', 'train']:
         if not resampled:
             assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
+        # roll over and repeat a few samples to get same number of full batches on each node
         round_fn = math.floor if floor else math.ceil
         global_batch_size = args.batch_size * args.world_size
         num_batches = round_fn(num_samples / global_batch_size)
         num_workers = max(1, args.workers)
-        num_worker_batches = round_fn(num_batches / num_workers)
+        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
         num_batches = num_worker_batches * num_workers
         num_samples = num_batches * global_batch_size
-        dataset = dataset.with_epoch(num_worker_batches)
+        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
     else:
+        # last batches are partial, eval is done on single (master) node
         num_batches = math.ceil(num_samples / args.batch_size)
 
     dataloader = wds.WebLoader(
@@ -513,115 +481,22 @@ def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
         persistent_workers=True,
     )
 
+    # FIXME not clear which approach is better, with_epoch before vs after dataloader?
+    # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
+    # if is_train:
+    #     # roll over and repeat a few samples to get same number of full batches on each node
+    #     global_batch_size = args.batch_size * args.world_size
+    #     num_batches = math.ceil(num_samples / global_batch_size)
+    #     num_workers = max(1, args.workers)
+    #     num_batches = math.ceil(num_batches / num_workers) * num_workers
+    #     num_samples = num_batches * global_batch_size
+    #     dataloader = dataloader.with_epoch(num_batches)
+    # else:
+    #     # last batches are partial, eval is done on single (master) node
+    #     num_batches = math.ceil(num_samples / args.batch_size)
+
+    # add meta-data to dataloader instance for convenience
     dataloader.num_batches = num_batches
     dataloader.num_samples = num_samples
 
     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
-
-
-# def get_wds_dataset(args, preprocess_img, mode, epoch=0, floor=False):
-#     if mode in ['pretrain', 'train']:
-#         input_shards = args.train_data
-#     else:
-#         input_shards = args.val_data
-#     assert input_shards is not None
-#     resampled = getattr(args, 'dataset_resampled', False) and mode in ['pretrain', 'train']
-
-#     num_samples, num_shards = get_dataset_size(input_shards)
-#     if not num_samples:
-#         if mode in ['pretrain', 'train']:
-#             num_samples = args.train_num_samples
-#             if not num_samples:
-#                 raise RuntimeError(
-#                     'Currently, number of dataset samples must be specified for training dataset. '
-#                     'Please specify via `--train-num-samples` if no dataset length info present.')
-#         else:
-#             num_samples = args.val_num_samples or 0  # eval will just exhaust the iterator if not specified
-
-#     shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
-    
-#     if resampled:
-#         pipeline = [ResampledShards2(input_shards, weights=args.train_data_upsampling_factors, deterministic=True, epoch=shared_epoch)]
-#     else:
-#         assert args.train_data_upsampling_factors is None, "--train_data_upsampling_factors is only supported when sampling with replacement (together with --dataset-resampled)."
-#         pipeline = [wds.SimpleShardList(input_shards)]
-
-#     # at this point we have an iterator over all the shards
-#     if mode in ['pretrain', 'train']:
-#         if not resampled:
-#             pipeline.extend([
-#                 detshuffle2(
-#                     bufsize=_SHARD_SHUFFLE_SIZE,
-#                     initial=_SHARD_SHUFFLE_INITIAL,
-#                     seed=args.seed,
-#                     epoch=shared_epoch,
-#                 ),
-#                 wds.split_by_node,
-#                 wds.split_by_worker,
-#             ])
-#         pipeline.extend([
-#             # at this point, we have an iterator over the shards assigned to each worker at each node
-#             tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
-#             wds.shuffle(
-#                 bufsize=_SAMPLE_SHUFFLE_SIZE,
-#                 initial=_SAMPLE_SHUFFLE_INITIAL,
-#             ),
-#         ])
-#     else:
-#         pipeline.extend([
-#             wds.split_by_worker,
-#             # at this point, we have an iterator over the shards assigned to each worker
-#             wds.tarfile_to_samples(handler=log_and_continue),
-#         ])
-#     pipeline.extend([
-#         wds.decode("pilrgb", handler=log_and_continue),
-#         wds.rename(image="jpg", label="cls"),
-#         wds.map(preprocess_img),
-#         wds.batched(args.batch_size, partial=True)
-#     ])
-
-#     dataset = wds.DataPipeline(*pipeline)
-
-#     if mode in ['pretrain', 'train']:
-#         if not resampled:
-#             assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
-#         # roll over and repeat a few samples to get same number of full batches on each node
-#         round_fn = math.floor if floor else math.ceil
-#         global_batch_size = args.batch_size * args.world_size
-#         num_batches = round_fn(num_samples / global_batch_size)
-#         num_workers = max(1, args.workers)
-#         num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
-#         num_batches = num_worker_batches * num_workers
-#         num_samples = num_batches * global_batch_size
-#         dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
-#     else:
-#         # last batches are partial, eval is done on single (master) node
-#         num_batches = math.ceil(num_samples / args.batch_size)
-
-#     dataloader = wds.WebLoader(
-#         dataset,
-#         batch_size=None,
-#         shuffle=False,
-#         num_workers=args.workers,
-#         persistent_workers=True,
-#     )
-
-#     # FIXME not clear which approach is better, with_epoch before vs after dataloader?
-#     # hoping to resolve via https://github.com/webdataset/webdataset/issues/169
-#     # if is_train:
-#     #     # roll over and repeat a few samples to get same number of full batches on each node
-#     #     global_batch_size = args.batch_size * args.world_size
-#     #     num_batches = math.ceil(num_samples / global_batch_size)
-#     #     num_workers = max(1, args.workers)
-#     #     num_batches = math.ceil(num_batches / num_workers) * num_workers
-#     #     num_samples = num_batches * global_batch_size
-#     #     dataloader = dataloader.with_epoch(num_batches)
-#     # else:
-#     #     # last batches are partial, eval is done on single (master) node
-#     #     num_batches = math.ceil(num_samples / args.batch_size)
-
-#     # add meta-data to dataloader instance for convenience
-#     dataloader.num_batches = num_batches
-#     dataloader.num_samples = num_samples
-
-#     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)

@@ -223,8 +223,8 @@ class MosRep(nn.Module):
 
         # create the encoders
         # num_classes is the output fc dimension
-        self.encoder_q = base_encoder(num_classes=dim, zero_init_residual=True)
-        self.encoder_k = base_encoder(num_classes=dim, zero_init_residual=True)
+        self.encoder_q = base_encoder(pretrained = True, num_classes=dim, zero_init_residual=True)
+        self.encoder_k = base_encoder(pretrained = True, num_classes=dim, zero_init_residual=True)
         self.encoder_q.flatten = nn.Identity()
         self.encoder_k.flatten = nn.Identity()
         self.encoder_q.avgpool = nn.Identity()
@@ -280,7 +280,7 @@ class MosRep(nn.Module):
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys):
         batch_size = keys.shape[0]
-
+        # print(f"Batch Size: {batch_size}")
         ptr = int(self.queue_ptr)
         assert self.K % batch_size == 0  # for simplicity
 
@@ -414,6 +414,7 @@ class MosRep(nn.Module):
     def forward(self, batch, multi_crop):
         # parse batch
         im_q, im_q_mini, im_k = batch
+        # print(len(batch))
         batch_idx = torch.arange(
             im_q_mini.size(0),
             device=im_q_mini.device).unsqueeze(1).repeat(1, im_q_mini.size(1))
@@ -442,7 +443,7 @@ class MosRep(nn.Module):
             # undo shuffle
             k = self._batch_unshuffle_ddp(k, idx_unshuffle)
             k_gather = concat_all_gather(k)
-
+        # print(k_gather.shape)
         # compute logits: mosaic
         # positive logits: BK, B'
         pos_mos = torch.einsum("nc,mc->nm", [q_mos, k_gather])
