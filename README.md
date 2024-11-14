@@ -37,6 +37,11 @@ To convert the ImageNet dataset into webdataset format, please run:
 python imagenet2wds.py -i $IMAGENET_DIR -o $OUTPUT_FOLDER
 ```
 
+For Custom Dataset(unlablled training data) (for eg: HyperKvasir) use this:
+```
+python data2wds.py -i $TRAIN_DIR -o $OUTPUT_FOLDER
+```
+
 
 ### Unsupervised Pre-training
 
